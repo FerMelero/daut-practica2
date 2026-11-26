@@ -1,0 +1,101 @@
+{
+  "name": "05-manejador-errores",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Manejador global de errores\nSolo recibe fallos y envía un correo.\n**No** llama al notificador ni a Google Sheets para evitar errores en cadena.",
+        "width": 460,
+        "height": 140,
+        "color": 4
+      },
+      "id": "c59d9bdd-88a2-7eb1-2405-26ac5f3f554a",
+      "name": "Nota: anti-bucle",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "561cdd56-bc4c-50b6-9616-3e35353d6be0",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrae el contexto del error. No llama a Sheets ni al notificador (anti-bucle).\nconst e = $input.first().json;\nconst ex = e.execution || {};\nconst wfName = (e.workflow && e.workflow.name) || 'desconocido';\nconst nodo = (ex.lastNodeExecuted) || (ex.error && ex.error.node && ex.error.node.name) || 'desconocido';\nconst mensaje = (ex.error && ex.error.message) || 'Sin mensaje';\nconst hora = new Date().toISOString();\nconst enlace = ex.url || 'No disponible (ejecución sin URL)';\nreturn [{ json: { workflow: wfName, nodo, mensaje, hora, enlace } }];"
+      },
+      "id": "9c8a1932-64bc-9189-e238-5ac610abc291",
+      "name": "Extraer contexto del error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "n8n@ucjc-cloudops.local",
+        "toEmail": "CAMBIAR_DESTINATARIO@example.com",
+        "subject": "=[ERROR n8n] {{ $json.workflow }} – {{ $json.nodo }}",
+        "emailFormat": "html",
+        "html": "=<h2>Error en n8n</h2><table border=\"1\" cellpadding=\"6\" style=\"border-collapse:collapse\"><tr><th align=\"left\">Workflow</th><td>{{ $json.workflow }}</td></tr><tr><th align=\"left\">Nodo</th><td>{{ $json.nodo }}</td></tr><tr><th align=\"left\">Mensaje</th><td>{{ $json.mensaje }}</td></tr><tr><th align=\"left\">Hora</th><td>{{ $json.hora }}</td></tr><tr><th align=\"left\">Ejecución</th><td><a href=\"{{ $json.enlace }}\">{{ $json.enlace }}</a></td></tr></table>",
+        "options": {}
+      },
+      "id": "b49f9460-fa5d-acd7-84fe-cc16d37401c0",
+      "name": "Enviar correo de error",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "SMTP clase"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extraer contexto del error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraer contexto del error": {
+      "main": [
+        [
+          {
+            "node": "Enviar correo de error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
