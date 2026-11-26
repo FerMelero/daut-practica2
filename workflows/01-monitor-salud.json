@@ -1,0 +1,747 @@
+{
+  "name": "01-monitor-salud",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 01-monitor-salud\n**Disparo y configuración.** Todos los valores (umbral_ms=1500, timeout_ms=5000) se definen solo en el nodo Config.",
+        "width": 520,
+        "height": 150,
+        "color": 4
+      },
+      "id": "a6ba7a1b-f046-44a9-7d7d-51462aac346a",
+      "name": "Zona 1: disparo y configuración",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Medición por servicio.** t0 antes del HTTP; latencia = ahora - t0. Retry 3x/1000 ms, Never Error y salida de error.",
+        "width": 600,
+        "height": 150,
+        "color": 4
+      },
+      "id": "9f63017a-6359-7724-803b-c9925eea634a",
+      "name": "Zona 2: medición",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        700,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Clasificación y persistencia.** Switch CAÍDO/DEGRADADO/OK -> fila en `checks`. Al acabar el bucle se llama al 02-notificador.",
+        "width": 640,
+        "height": 150,
+        "color": 4
+      },
+      "id": "7985fa88-7032-02ed-6602-43d4a5565c1b",
+      "name": "Zona 3: clasificación y aviso",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "0a3afadb-1262-fe1c-7716-3e739987bb7d",
+      "name": "Cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -60
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "e6c627ca-5897-e6de-c2ec-5fa569e3ed23",
+      "name": "Ejecución manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ÚNICO punto de configuración: servicios, umbral y timeout.\nconst umbral_ms = 1500, timeout_ms = 5000;\nconst servicios = [\n  ['api-posts', 'https://jsonplaceholder.typicode.com/posts/1'],\n  ['api-chuck', 'https://api.chucknorris.io/jokes/random'],\n  ['api-lenta', 'https://httpbin.org/delay/2'],\n  ['api-503', 'https://httpbin.org/status/503'],\n  ['api-404', 'https://jsonplaceholder.typicode.com/posts/9999'],\n  ['dominio-roto', 'https://servicio-inexistente.ucjc-practica.invalid'],\n];\nreturn servicios.map(([servicio, url]) => ({ json: { servicio, url, umbral_ms, timeout_ms } }));"
+      },
+      "id": "fa535ffb-25e1-fd20-3416-52f9be21e06e",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "31c57ced-94e3-cda4-f69a-0a1f81320a2f",
+      "name": "Recorrer servicios",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        480,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "230fa4a7-eaf2-be9f-302c-a674c5cc8f62",
+              "name": "servicio",
+              "value": "={{ $json.servicio }}",
+              "type": "string"
+            },
+            {
+              "id": "d1b949ed-886d-b7d7-6d1c-9183b8bd5988",
+              "name": "url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "7c832a16-1568-43e5-0aa6-b2a3cdf8b748",
+              "name": "umbral_ms",
+              "value": "={{ $json.umbral_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "35f1e67c-a4c9-f3f2-01b0-5f4b0820ec17",
+              "name": "timeout_ms",
+              "value": "={{ $json.timeout_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "242e7ade-a4cc-9590-a757-4f39674bea66",
+              "name": "t0",
+              "value": "={{ $now.toMillis() }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "08471290-a444-e824-c6d1-3c2a066ba4df",
+      "name": "Guardar t0",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        720,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": "={{ $json.timeout_ms }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "54f35990-d8e9-84d8-2a34-264ab50c2905",
+      "name": "Comprobar servicio HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        120
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5938f5ab-1188-d986-99e0-f30f4d7d8f6a",
+              "name": "servicio",
+              "value": "={{ $('Guardar t0').item.json.servicio }}",
+              "type": "string"
+            },
+            {
+              "id": "da3b28ed-d93c-20b7-7896-067ba800b696",
+              "name": "url",
+              "value": "={{ $('Guardar t0').item.json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "c5cddcee-289c-3355-c3ad-42c850c63d13",
+              "name": "umbral_ms",
+              "value": "={{ $('Guardar t0').item.json.umbral_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "28076746-e368-0967-e198-d36cd75eef7a",
+              "name": "latencia_ms",
+              "value": "={{ $now.toMillis() -  $('Guardar t0').item.json.t0 }}",
+              "type": "string"
+            },
+            {
+              "id": "172f51ff-5dee-b5d0-0d0a-f3d2bde67bab",
+              "name": "http_status",
+              "value": "={{ $json.statusCode }}",
+              "type": "string"
+            },
+            {
+              "id": "b8a4c01f-78a9-d1bf-2943-ca9a01393161",
+              "name": "error",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fb218256-e2cb-3292-5121-2cbb30dfd762",
+      "name": "Normalizar respuesta",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1200,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f5ea45f1-4f0a-1883-fc64-85ac81863b48",
+              "name": "servicio",
+              "value": "={{ $('Guardar t0').item.json.servicio }}",
+              "type": "string"
+            },
+            {
+              "id": "1406b297-4d1c-f472-6b99-3b5ba7e25418",
+              "name": "url",
+              "value": "={{ $('Guardar t0').item.json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "71218114-fe99-a02c-b6c8-0708837e8fd1",
+              "name": "umbral_ms",
+              "value": "={{ $('Guardar t0').item.json.umbral_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "8176a440-fc84-7406-b120-66232b1a2f53",
+              "name": "latencia_ms",
+              "value": "={{ $now.toMillis() -  $('Guardar t0').item.json.t0 }}",
+              "type": "string"
+            },
+            {
+              "id": "e4d2f83d-5f6b-a9c5-3b3d-49c7a503f78b",
+              "name": "http_status",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cbe3e18d-9a79-f92e-9277-6e2871b2506e",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'object' ? ($json.error.message || JSON.stringify($json.error)) : $json.error }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ad377f17-0e82-c493-bda1-a978dcfee26f",
+      "name": "Normalizar error de red",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "f20e8514-0b22-bb8f-8d7c-fa0e30094259",
+      "name": "Unir resultados",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1440,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "5d5fcde4-9257-e147-2545-091d57a968f2",
+                    "leftValue": "={{ $json.error !== '' || Number($json.http_status) >= 400 }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CAÍDO"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "8978aecc-4cb5-2168-bc94-dabebe0fb3c1",
+                    "leftValue": "={{ $json.error === '' && Number($json.http_status) >= 200 && Number($json.http_status) < 400 && Number($json.latencia_ms) > Number($json.umbral_ms) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DEGRADADO"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "OK"
+        }
+      },
+      "id": "e8465913-c4af-e7f6-d501-874f22c44dc3",
+      "name": "Clasificar estado",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1680,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "570e77d4-ee54-edc0-ce85-69047b5998b0",
+              "name": "estado",
+              "value": "CAÍDO",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "983ab690-0f67-4124-cc2b-a3a4d6100eba",
+      "name": "Marcar CAÍDO",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2653437e-fe98-bfff-7f39-7ab70e3a6074",
+              "name": "estado",
+              "value": "DEGRADADO",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6391f655-97e2-f207-2ec4-1d99ad4a6ad7",
+      "name": "Marcar DEGRADADO",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1920,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6a261e09-3c9b-dcda-e28d-52c0aaec51ee",
+              "name": "estado",
+              "value": "OK",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "824c969f-a0fa-1d72-9d4c-c6a3b32c62e6",
+      "name": "Marcar OK",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1920,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REEMPLAZAR_ID_LIBRO_n8n_practica2",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "checks",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "servicio": "={{ $json.servicio }}",
+            "url": "={{ $json.url }}",
+            "estado": "={{ $json.estado }}",
+            "http_status": "={{ $json.http_status }}",
+            "latencia_ms": "={{ $json.latencia_ms }}",
+            "error": "={{ $json.error }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "d4b60612-0fce-314c-70b2-73c69803cf1c",
+      "name": "Guardar check en Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convierte los resultados del bucle al contrato del notificador.\nreturn $input.all().map(it => {\n  const r = it.json;\n  const detalle = r.error ? `Error: ${r.error}` : `HTTP ${r.http_status} en ${r.latencia_ms} ms`;\n  return { json: { tipo: 'estado', clave: r.servicio, estado: r.estado, detalle } };\n});"
+      },
+      "id": "bc721819-a825-6b88-4df6-f4ebb2a6f76b",
+      "name": "Preparar avisos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "REEMPLAZAR_ID_02",
+          "mode": "list",
+          "cachedResultName": "02-notificador"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "96b52396-20ba-36ef-1707-8babab655917",
+      "name": "Llamar al notificador",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cuenta los avisos enviados y los anota en el log de la ejecución.\nconst res = $input.all().map(i => i.json);\nconst enviados = res.filter(r => r.notificado === true).length;\nconsole.log(`Monitor de salud: ${enviados} avisos enviados de ${res.length} servicios`);\nreturn [{ json: { servicios: res.length, avisos_enviados: enviados } }];"
+      },
+      "id": "418bb08a-3c0c-a2bb-d587-4a93174a761b",
+      "name": "Contar avisos enviados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -80
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 5 minutos": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecución manual": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Recorrer servicios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recorrer servicios": {
+      "main": [
+        [
+          {
+            "node": "Preparar avisos",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Guardar t0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar t0": {
+      "main": [
+        [
+          {
+            "node": "Comprobar servicio HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comprobar servicio HTTP": {
+      "main": [
+        [
+          {
+            "node": "Normalizar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalizar error de red",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar respuesta": {
+      "main": [
+        [
+          {
+            "node": "Unir resultados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar error de red": {
+      "main": [
+        [
+          {
+            "node": "Unir resultados",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Unir resultados": {
+      "main": [
+        [
+          {
+            "node": "Clasificar estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clasificar estado": {
+      "main": [
+        [
+          {
+            "node": "Marcar CAÍDO",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Marcar DEGRADADO",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Marcar OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar CAÍDO": {
+      "main": [
+        [
+          {
+            "node": "Guardar check en Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar DEGRADADO": {
+      "main": [
+        [
+          {
+            "node": "Guardar check en Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar OK": {
+      "main": [
+        [
+          {
+            "node": "Guardar check en Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar check en Sheets": {
+      "main": [
+        [
+          {
+            "node": "Recorrer servicios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar avisos": {
+      "main": [
+        [
+          {
+            "node": "Llamar al notificador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Llamar al notificador": {
+      "main": [
+        [
+          {
+            "node": "Contar avisos enviados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
