@@ -1,0 +1,431 @@
+{
+  "name": "02-notificador",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 02-notificador (sub-workflow)\nEntrada: `tipo` (estado|incidencia), `clave`, `estado`, `detalle`.\nSolo avisa si hay cambio de estado (Static Data). Devuelve `{notificado, motivo}` por item.",
+        "width": 560,
+        "height": 150,
+        "color": 4
+      },
+      "id": "1c77b5f1-eb55-7dc8-6146-8be37bd7b780",
+      "name": "Nota: contrato",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "tipo"
+            },
+            {
+              "name": "clave"
+            },
+            {
+              "name": "estado"
+            },
+            {
+              "name": "detalle"
+            }
+          ]
+        }
+      },
+      "id": "88c75374-f4c6-9f9c-faa5-3a052c6506c9",
+      "name": "Recibir avisos",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Detecta cambios de estado con Static Data (solo persiste en ejecuciones NO manuales).\nconst sd = $getWorkflowStaticData('global');\nif (!sd.estados) sd.estados = {};\nconst out = [];\nfor (const it of $input.all()) {\n  const { tipo, clave, estado, detalle } = it.json;\n  let anterior = null, notificar = false, motivo = '', aviso = '';\n  if (tipo === 'incidencia') {\n    notificar = true; motivo = 'Incidencia: siempre se notifica'; aviso = 'CRITICO'; anterior = '-';\n  } else {\n    anterior = sd.estados[clave] ?? null;\n    if (anterior === null) {\n      notificar = estado !== 'OK';\n      motivo = notificar ? 'Primera vez y no está OK' : 'Primera vez y está OK';\n    } else if (anterior !== estado) {\n      notificar = true; motivo = `Cambio ${anterior} -> ${estado}`;\n    } else {\n      motivo = 'Sin cambios';\n    }\n    sd.estados[clave] = estado;\n    if (estado === 'CAÍDO') aviso = 'CRITICO';\n    else if (estado === 'DEGRADADO') aviso = 'AVISO';\n    else if (estado === 'OK') aviso = 'RECUPERADO';\n    // Solo es recuperación si veníamos de un estado no OK\n    if (notificar && estado === 'OK' && (anterior === null || anterior === 'OK')) notificar = false;\n  }\n  out.push({ json: { tipo, clave, estado, detalle, anterior: anterior ?? '(primera vez)', notificar, motivo, aviso } });\n}\nreturn out;"
+      },
+      "id": "dcbe6517-9235-9099-2815-332d9b4b323f",
+      "name": "Detectar cambio de estado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "a2ad4103-fbb2-0abb-8760-5b5a5d894de0",
+              "leftValue": "={{ $json.notificar }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2c17d9c7-b475-b1fa-2b0d-c4ca939de045",
+      "name": "¿Hay que notificar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "e010e833-2577-72e0-3683-95c6d5e68607",
+                    "leftValue": "={{ $json.aviso }}",
+                    "rightValue": "CRITICO",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CRÍTICO"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "388c3e7a-2fe8-1878-e89e-d996e14e3ed2",
+                    "leftValue": "={{ $json.aviso }}",
+                    "rightValue": "AVISO",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "AVISO"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "1e063f12-ba4b-9e21-076b-0968e1b5ee21",
+                    "leftValue": "={{ $json.aviso }}",
+                    "rightValue": "RECUPERADO",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "RECUPERADO"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0446ff3c-4b58-b883-6059-c2975468d6f2",
+      "name": "Tipo de aviso",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "48deccd6-59ea-3029-7fc9-4013d1c291ec",
+              "name": "prefijo",
+              "value": "[CRÍTICO]",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "bcdde96e-b11b-d3d6-d406-988d3eb66dba",
+      "name": "Prefijo crítico",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        960,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a84eb002-d5e5-f972-e3b1-16b0a8cdb1db",
+              "name": "prefijo",
+              "value": "[AVISO]",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "050e1687-25fa-1717-fbe0-ee953a17b93a",
+      "name": "Prefijo aviso",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        960,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d9b5cef6-f48c-5146-f931-bbc571f77f71",
+              "name": "prefijo",
+              "value": "[RECUPERADO]",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ec8d4fa9-d69e-8750-4df9-7a0c65b6ffe4",
+      "name": "Prefijo recuperado",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        960,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construye asunto y cuerpo HTML con tabla.\nreturn $input.all().map(it => {\n  const j = it.json;\n  const fecha = new Date().toISOString();\n  const etiqueta = j.tipo === 'incidencia' ? 'Incidencia' : 'Servicio';\n  const html = `<h2>${j.prefijo} ${j.clave}</h2>\n<table border=\"1\" cellpadding=\"6\" style=\"border-collapse:collapse\">\n<tr><th align=\"left\">${etiqueta}</th><td>${j.clave}</td></tr>\n<tr><th align=\"left\">Estado anterior</th><td>${j.anterior}</td></tr>\n<tr><th align=\"left\">Estado nuevo</th><td>${j.estado}</td></tr>\n<tr><th align=\"left\">Detalle</th><td>${j.detalle ?? ''}</td></tr>\n<tr><th align=\"left\">Fecha</th><td>${fecha}</td></tr></table>`;\n  return { json: { ...j, asunto: `${j.prefijo} ${j.clave} – ${j.estado}`, html } };\n});"
+      },
+      "id": "e3002cec-be8a-320f-344c-05070c512243",
+      "name": "Construir mensaje HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "n8n@ucjc-cloudops.local",
+        "toEmail": "CAMBIAR_DESTINATARIO@example.com",
+        "subject": "={{ $json.asunto }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "2856cce4-a215-e489-fe8d-64314d15fb10",
+      "name": "Enviar correo de aviso",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        -80
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "SMTP clase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Respuesta al llamador: una entrada por item recibido (Email Send falla si no envía).\nreturn $('Detectar cambio de estado').all().map(it => ({\n  json: { clave: it.json.clave, notificado: it.json.notificar, motivo: it.json.motivo }\n}));"
+      },
+      "id": "1d1629f6-f5c8-9be1-7f2b-17e1b6d0cee6",
+      "name": "Respuesta al llamador",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        60
+      ]
+    }
+  ],
+  "connections": {
+    "Recibir avisos": {
+      "main": [
+        [
+          {
+            "node": "Detectar cambio de estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detectar cambio de estado": {
+      "main": [
+        [
+          {
+            "node": "¿Hay que notificar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay que notificar?": {
+      "main": [
+        [
+          {
+            "node": "Tipo de aviso",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respuesta al llamador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tipo de aviso": {
+      "main": [
+        [
+          {
+            "node": "Prefijo crítico",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prefijo aviso",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prefijo recuperado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prefijo crítico": {
+      "main": [
+        [
+          {
+            "node": "Construir mensaje HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prefijo aviso": {
+      "main": [
+        [
+          {
+            "node": "Construir mensaje HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prefijo recuperado": {
+      "main": [
+        [
+          {
+            "node": "Construir mensaje HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir mensaje HTML": {
+      "main": [
+        [
+          {
+            "node": "Enviar correo de aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar correo de aviso": {
+      "main": [
+        [
+          {
+            "node": "Respuesta al llamador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
