@@ -1,0 +1,677 @@
+Práctica 2 – Plataforma de monitorización y gestión de incidencias con n8n
+
+Despliegue y Automatización · UCJC · 4º Ingeniería Informática
+1. Contexto y objetivo
+
+Construiréis, en equipos de hasta 3 personas, una mini plataforma de operaciones con n8n: vigila servicios, recibe incidencias por API, avisa solo cuando algo cambia y genera un informe diario.
+
+Escenario. Sois el equipo DevOps de UCJC Cloud Ops. Dirección quiere saber qué servicios están caídos o degradados, poder registrar incidencias desde cualquier herramienta (CI, scripts, otros equipos) y recibir cada mañana un informe de disponibilidad. Todo debe funcionar sin intervención manual.
+
+Qué cambia respecto a los retos. En los retos cada flujo era lineal y aislado. Aquí hay 5 workflows que se llaman entre sí, comparten datos, tienen estado entre ejecuciones, controlan sus errores y exponen una API protegida.
+
+Al terminar sabréis:
+
+    Dividir una solución en workflows modulares y reutilizables (sub-workflows).
+    Controlar fallos: timeouts, reintentos, salidas de error y un manejador global.
+    Exponer una API con Webhook: autenticación, validación y códigos HTTP correctos.
+    Guardar estado entre ejecuciones (Static Data) y datos compartidos (Google Sheets).
+    Calcular métricas con el nodo Code y presentarlas en HTML y CSV.
+    Documentar y probar una automatización como en un entorno real.
+
+Normas.
+
+    Entorno: el n8n autoalojado en Docker de clase, con acceso a Internet. Usad solo las APIs públicas indicadas.
+    Credenciales (SMTP, Google, API Key): siempre como Credentials de n8n. Nunca dentro de un nodo ni del JSON exportado.
+    Equipos de hasta 3 personas; el README indicará quién hizo cada parte.
+    Plazo y modo de entrega: según el campus virtual. La práctica forma parte del 40 % de entregas de laboratorio.
+
+2. Arquitectura general
+
+Los workflows 01, 03 y 04 son independientes y comparten datos a través de Google Sheets; el 02 es el único que llaman otros dos y el 05 recoge los fallos de todos.
+
+[embed: node/ad1a171d-a4c9]
+
+El notificador (resaltado) lo invocan el monitor, siempre, y la API, solo con incidencias críticas. El monitor y la API escriben en la hoja de Google Sheets; el informe diario la lee.
+
+Hojas de Google Sheets. Crear un único libro n8n_practica2 con estas dos hojas y sus cabeceras en la primera fila:
+
+Hoja
+	
+
+Columnas
+	
+
+La escribe
+	
+
+La lee
+
+checks
+	
+
+timestamp, servicio, url, estado, http_status, latencia_ms, error
+	
+
+01
+	
+
+04
+
+incidencias
+	
+
+id, creada, vence, servicio, severidad, descripcion, reportado_por, responsable, email, sla_horas, estado
+	
+
+03
+	
+
+04
+
+Convenciones. Los workflows se llaman exactamente 01-monitor-salud, 02-notificador, 03-api-incidencias, 04-informe-diario y 05-manejador-errores. Las fechas se guardan en formato ISO 8601.
+3. Parte 1 – Monitor de salud (workflow 01-monitor-salud)
+
+Cada 5 minutos el workflow comprueba 6 servicios, clasifica cada uno como OK, DEGRADADO o CAÍDO y guarda el resultado. Dos de ellos fallan a propósito y uno es lento: así se comprueban los tres caminos.
+
+Servicio
+	
+
+URL
+	
+
+Estado esperado
+
+api-posts
+	
+
+https://jsonplaceholder.typicode.com/posts/1
+	
+
+OK
+
+api-chuck
+	
+
+https://api.chucknorris.io/jokes/random
+	
+
+OK
+
+api-lenta
+	
+
+https://httpbin.org/delay/2
+	
+
+DEGRADADO (responde en unos 2 s)
+
+api-503
+	
+
+https://httpbin.org/status/503
+	
+
+CAÍDO (HTTP 503)
+
+api-404
+	
+
+https://jsonplaceholder.typicode.com/posts/9999
+	
+
+CAÍDO (HTTP 404)
+
+dominio-roto
+	
+
+https://servicio-inexistente.ucjc-practica.invalid
+	
+
+CAÍDO (error de DNS)
+
+Requisitos del flujo
+
+    Disparadores. Schedule Trigger cada 5 minutos y Manual Trigger para pruebas, ambos hacia el mismo nodo.
+    Configuración única. Un nodo Config (Code o Set) genera un item por servicio e incluye umbral_ms = 1500 y timeout_ms = 5000. No se repiten esos valores en otros nodos: se leen de aquí.
+    Bucle. Loop Over Items con lote de 1 servicio.
+    Medición. Antes del HTTP Request, un Set guarda t0 = {{ $now.toMillis() }}. Después, la latencia se calcula como $now.toMillis() menos t0.
+    HTTP Request con:
+
+    Timeout tomado de timeout_ms.
+    Retry On Fail activado: 3 intentos y 1000 ms de espera.
+    Response > Never Error e Include Response Headers and Status activados.
+    On Error > Continue (using error output).
+
+    Normalización. Las salidas de éxito y de error se unen con un Merge. Cada item queda con servicio, url, http_status (vacío si hubo error de red), latencia_ms y error.
+    Clasificación con un Switch de 3 salidas y Fallback:
+
+    CAÍDO: hubo error de red, o http_status ≥ 400.
+    DEGRADADO: http_status entre 200 y 399 y latencia_ms mayor que el umbral.
+    OK: el resto.
+
+    Persistencia. Google Sheets > Append Row en la hoja checks con las columnas timestamp, servicio, url, estado, http_status, latencia_ms, error.
+    Aviso. Al terminar el bucle, los 6 resultados se envían al notificador (Parte 2) mediante Execute Workflow.
+
+Resultado esperado de una ejecución: 6 filas nuevas en checks: 2 OK, 1 DEGRADADO y 3 CAÍDO.
+
+Pregunta para el README: con Never Error activado, ¿por qué el 503 no se reintenta y el dominio roto sí? Comprobadlo en la pestaña Executions y explicadlo.
+4. Parte 2 – Notificador reutilizable (workflow 02-notificador)
+
+Un único sub-workflow envía los avisos por correo y solo avisa cuando un servicio cambia de estado, para no recibir el mismo mensaje cada 5 minutos. Lo usan la Parte 1 y la Parte 3.
+
+Contrato de entrada. Cada item recibido tiene tipo (estado o incidencia), clave (nombre del servicio o ID de la incidencia), estado y detalle.
+
+Requisitos del flujo
+
+    Entrada. Nodo Execute Workflow Trigger con los cuatro campos anteriores definidos.
+    Detectar cambio. Un nodo Code usa $getWorkflowStaticData('global') para guardar el último estado de cada clave. Reglas:
+
+    Si tipo es incidencia, siempre se notifica.
+    Si el estado es distinto del guardado, se notifica y se actualiza.
+    Si es la primera vez que se ve la clave, se notifica solo cuando el estado no es OK.
+
+    Tipo de aviso. Un Switch separa tres casos: CAÍDO (asunto [CRÍTICO]), DEGRADADO ([AVISO]) y vuelta a OK tras una caída ([RECUPERADO]).
+    Mensaje. Un nodo Set o Code construye un cuerpo HTML con una tabla: servicio o incidencia, estado anterior y nuevo, detalle y fecha.
+    Envío. Email Send con la credencial SMTP de clase.
+    Respuesta al llamador. El último nodo devuelve { notificado: true | false, motivo } por cada item. La Parte 1 cuenta cuántos avisos se enviaron y lo anota en el log de la ejecución.
+
+Resultado esperado.
+
+    Primer ciclo completo: 4 avisos (3 servicios CAÍDO y 1 DEGRADADO).
+    Segundo ciclo sin cambios: 0 avisos.
+    Si cambiáis la URL de api-503 por una válida: 1 aviso [RECUPERADO].
+
+Cuidado con las pruebas. Static Data solo se guarda en ejecuciones no manuales. Para probar este comportamiento hay que activar el workflow 01 y dejar que el Schedule se dispare 2 o 3 veces. Explicad en el README por qué una ejecución manual siempre parece «notificar todo».
+5. Parte 3 – API de incidencias (workflow 03-api-incidencias)
+
+Cualquier herramienta puede registrar una incidencia con una petición POST autenticada. El workflow la valida, la enriquece con su responsable, calcula el plazo (SLA), la guarda y responde con el código HTTP adecuado.
+
+Contrato de la API
+
+    Ruta: POST /webhook/incidencias (en pruebas, /webhook-test/incidencias).
+    Cabecera X-API-Key con el valor de una credencial Header Auth.
+    Cuerpo JSON con cuatro campos:
+    servicio: texto obligatorio.
+    severidad: critica, alta, media o baja.
+    descripcion: texto de al menos 10 caracteres.
+    reportado_por: número entero entre 1 y 10 (id de usuario de JSONPlaceholder).
+
+Requisitos del flujo
+
+    Webhook (POST, path incidencias) con autenticación Header Auth y respuesta mediante el nodo Respond to Webhook.
+    Validación. Un nodo Code revisa las cuatro reglas y devuelve todos los errores a la vez, no solo el primero. Si hay alguno, responde 400 con { ok: false, errores: [...] }.
+    Enriquecimiento. HTTP Request GET https://jsonplaceholder.typicode.com/users/{reportado_por}. Si el usuario no existe (por ejemplo, el 99), el nodo usa Continue (using error output) y se responde 422.
+    SLA. Un Switch por severidad asigna las horas: crítica 4, alta 8, media 24, baja 72. Las ramas se reunifican con Merge (Append).
+    Registro. Un nodo Code construye la incidencia:
+
+    id con formato INC-yyyyMMdd-HHmmss-NNN, donde NNN son tres dígitos aleatorios.
+    creada y vence (creada más las horas de SLA), en formato ISO.
+    responsable y email, tomados del usuario obtenido.
+    estado = "ABIERTA".
+
+    Persistencia. Google Sheets > Append Row en la hoja incidencias con todos esos campos.
+    Aviso inmediato. Si la severidad es crítica, se llama al notificador (Parte 2) con tipo = incidencia. Esa llamada no espera al sub-workflow (opción Wait for Sub-Workflow Completion desactivada) para que la API responda rápido.
+    Respuesta. Respond to Webhook con código 201 y un JSON con ok, id, vence y responsable.
+
+Códigos HTTP esperados
+
+Caso
+	
+
+Código
+	
+
+Respuesta
+
+Falta la API Key o es incorrecta
+	
+
+403
+	
+
+La genera el propio nodo Webhook
+
+JSON con campos inválidos o ausentes
+	
+
+400
+	
+
+Lista completa de errores
+
+reportado_por no existe (p. ej. 99)
+	
+
+422
+	
+
+Mensaje de error indicando el campo
+
+Incidencia válida
+	
+
+201
+	
+
+id, vence, responsable
+
+Pregunta para el README: ¿por qué un usuario inexistente se responde con 422 y no con 400? Justificadlo con una frase.
+6. Parte 4 – Informe diario (workflow 04-informe-diario)
+
+Cada mañana a las 08:00 el workflow lee las últimas 24 horas de checks e incidencias, calcula la disponibilidad de cada servicio y envía un correo HTML con el CSV adjunto.
+
+Métricas por servicio
+
+Métrica
+	
+
+Definición
+
+checks
+	
+
+Número de comprobaciones en las últimas 24 h
+
+caidas
+	
+
+Comprobaciones con estado CAÍDO
+
+disponibilidad_pct
+	
+
+(checks con estado OK o DEGRADADO) / checks × 100, con 1 decimal
+
+latencia_media_ms
+	
+
+Media de latencia_ms en los checks con respuesta HTTP
+
+latencia_p95_ms
+	
+
+Percentil 95 (método del rango más cercano) de esos mismos checks
+
+estado_actual
+	
+
+Estado del último check registrado
+
+Métricas de incidencias: total de las últimas 24 h, total por severidad, número de abiertas y número de vencidas (vence anterior a ahora y estado ABIERTA).
+
+Requisitos del flujo
+
+    Disparadores. Schedule Trigger diario a las 08:00 y Manual Trigger para pruebas.
+    Lectura. Dos ramas con Google Sheets > Get Row(s), una por hoja. Activad Always Output Data en ambas para que el flujo no se detenga si una hoja está vacía.
+    Filtro temporal. Filter o Code que conserve solo las filas de las últimas 24 horas según timestamp o creada.
+    Cálculo. Un nodo Code (Run Once for All Items) devuelve un item por servicio con las métricas anteriores y otro item con el resumen de incidencias y el estado_global, que es el peor estado actual de todos los servicios.
+    Informe HTML. Tabla de servicios con el color de la disponibilidad (verde desde 99 %, naranja entre 95 % y 99 %, rojo por debajo de 95 %) y un bloque con el resumen de incidencias.
+    CSV adjunto. Spreadsheet File (Write, CSV) con una fila por servicio, llamado informe_AAAA-MM-DD.csv con la fecha del día.
+    Envío. Email Send con asunto Informe de operaciones – AAAA-MM-DD – <estado global>, el HTML en el cuerpo y el CSV como adjunto.
+    Caso sin datos. Si no hay filas, el informe se envía igualmente con el texto «Sin datos en las últimas 24 h». No debe fallar.
+
+Resultado esperado. Un correo con una fila por cada uno de los 6 servicios. api-posts y api-chuck cerca del 100 %, api-lenta cerca del 100 % con latencia alta, y api-503, api-404 y dominio-roto con 0 %. El estado global es CAÍDO.
+7. Parte 5 – Gestión global de errores (workflow 05-manejador-errores)
+
+Si cualquiera de los otros cuatro workflows falla de forma inesperada, este workflow lo detecta y avisa con el contexto necesario para localizar el problema.
+
+Requisitos del flujo
+
+    Disparador. Nodo Error Trigger.
+    Contexto. Un Set o Code extrae el nombre del workflow, el nodo que falló, el mensaje de error, la hora y el enlace a la ejecución.
+    Aviso. Email Send con asunto [ERROR n8n] <workflow> – <nodo>.
+    Anti-bucle. Este workflow nunca debe llamar al notificador ni a Google Sheets, para no provocar errores en cadena.
+    Configuración. En los Settings de los workflows 01, 02, 03 y 04, el campo Error Workflow apunta a 05-manejador-errores.
+
+Prueba obligatoria. Añadid temporalmente a un workflow un nodo Code con throw new Error('fallo de prueba'), ejecutadlo con el workflow activo y comprobad que llega el correo. Después quitad el nodo y dejad la captura en el README.
+
+Pregunta para el README: ¿qué diferencia hay entre gestionar un error con la salida de error de un nodo (Parte 1) y hacerlo con un Error Workflow? ¿Cuándo conviene cada uno?
+8. Plan de pruebas
+
+El README incluye esta tabla rellena, con captura o salida real de cada caso. Sustituid TU_CLAVE por la API Key de vuestra credencial.
+
+Nº
+	
+
+Caso
+	
+
+Cómo se prueba
+	
+
+Resultado esperado
+
+T1
+	
+
+Monitor, ciclo completo
+	
+
+Ejecutar 01 manualmente
+	
+
+6 filas en checks: 2 OK, 1 DEGRADADO, 3 CAÍDO
+
+T2
+	
+
+Reintentos
+	
+
+Revisar Executions de dominio-roto
+	
+
+3 intentos; el 503 no se reintenta
+
+T3
+	
+
+Anti-spam
+	
+
+Activar 01 y esperar 3 ciclos
+	
+
+4 avisos en el primero, 0 en el segundo y el tercero
+
+T4
+	
+
+Recuperación
+	
+
+Cambiar la URL de api-503 por una válida
+	
+
+1 aviso [RECUPERADO]
+
+T5
+	
+
+API sin clave
+	
+
+curl sin cabecera X-API-Key
+	
+
+403
+
+T6
+	
+
+API con datos inválidos
+	
+
+Enviar severidad: "urgente" y descripcion: "corta"
+	
+
+400 con 2 errores en la lista
+
+T7
+	
+
+API con usuario inexistente
+	
+
+Enviar reportado_por: 99
+	
+
+422
+
+T8
+	
+
+API válida, severidad media
+	
+
+Petición correcta
+	
+
+201, vence a 24 h, fila nueva en incidencias, sin correo
+
+T9
+	
+
+API válida, severidad crítica
+	
+
+Petición correcta
+	
+
+201, vence a 4 h, fila nueva y correo de incidencia
+
+T10
+	
+
+Informe con datos
+	
+
+Ejecutar 04 tras varios ciclos
+	
+
+Correo con 6 filas y CSV adjunto con el mismo contenido
+
+T11
+	
+
+Informe sin datos
+	
+
+Ejecutar 04 con hojas vacías
+	
+
+Correo con «Sin datos» y ejecución sin error
+
+T12
+	
+
+Error global
+	
+
+Nodo Code con throw new Error
+	
+
+Correo [ERROR n8n] con workflow y nodo
+
+Ejemplo de petición válida (T9):
+
+curl -i -X POST http://localhost:5678/webhook-test/incidencias \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: TU_CLAVE" \
+  -d '{"servicio":"api-posts","severidad":"critica","descripcion":"Responde con errores 500 desde las 08:00","reportado_por":3}'
+
+9. Entregables
+
+Un único .zip con esta estructura:
+
+practica2-<grupo>/
+├── workflows/
+│   ├── 01-monitor-salud.json
+│   ├── 02-notificador.json
+│   ├── 03-api-incidencias.json
+│   ├── 04-informe-diario.json
+│   └── 05-manejador-errores.json
+├── evidencias/
+│   ├── capturas de cada workflow y de las pruebas T1 a T12
+│   ├── correos recibidos (aviso, recuperación, incidencia, informe, error)
+│   └── informe_AAAA-MM-DD.csv
+├── docker-compose.yml   (el que uséis para levantar n8n)
+├── pruebas.md           (tabla T1 a T12 rellena)
+└── README.md
+
+El README.md debe incluir:
+
+    Descripción general y un diagrama de la arquitectura.
+    Por cada workflow, una tabla con sus nodos y la función de cada uno.
+    Decisiones de diseño: qué alternativas valorasteis y por qué elegisteis esta.
+    Respuestas a las cuatro preguntas del enunciado: reintentos con Never Error (Parte 1), ejecución manual y Static Data (Parte 2), 422 frente a 400 (Parte 3) y salida de error frente a Error Workflow (Parte 5).
+    Problemas encontrados y cómo los resolvisteis.
+    Reparto de trabajo entre los miembros del equipo.
+
+Antes de entregar, comprobad que:
+
+    Ningún JSON contiene contraseñas, tokens ni la API Key en claro.
+    Los workflows 01 a 05 se pueden importar en un n8n limpio y solo hay que reasignar credenciales.
+    Todos los nodos tienen un nombre descriptivo, no HTTP Request1.
+
+10. Rúbrica de evaluación
+
+La nota de la práctica es la suma ponderada de estos criterios. Cada criterio se valora de 0 a 10 según el nivel descrito.
+
+Criterio
+	
+
+Excelente (9-10)
+	
+
+Notable (7-8)
+	
+
+Aprobado (5-6)
+	
+
+Insuficiente (<5)
+	
+
+Peso
+
+Arquitectura y modularidad
+	
+
+5 workflows conectados, notificador reutilizado desde 01 y 03, configuración en un solo nodo
+	
+
+Workflows conectados con alguna duplicación de lógica
+	
+
+Funciona, pero con lógica copiada entre workflows
+	
+
+Workflows aislados o monolíticos
+	
+
+15 %
+
+Monitor de salud (Parte 1)
+	
+
+Bucle, timeout, reintentos, salida de error y clasificación correctos en los 6 servicios
+	
+
+Clasifica bien, con fallos menores en reintentos o latencia
+	
+
+Clasifica solo los casos sencillos
+	
+
+No distingue caídas de degradaciones o se rompe ante un error
+	
+
+20 %
+
+API de incidencias (Parte 3)
+	
+
+Autenticación, validación completa, SLA, registro y los 4 códigos HTTP correctos
+	
+
+Todos los códigos, con validación parcial
+	
+
+Solo el camino feliz y el 400
+	
+
+Sin validación ni códigos HTTP diferenciados
+	
+
+20 %
+
+Notificador y estado (Parte 2)
+	
+
+Avisa solo ante cambios, con los 3 tipos de aviso y respuesta al llamador
+	
+
+Detecta cambios, con fallos en el primer ciclo o en la recuperación
+	
+
+Avisa siempre o casi siempre
+	
+
+No envía avisos
+	
+
+10 %
+
+Informe y métricas (Parte 4)
+	
+
+Métricas correctas, p95 bien calculado, HTML con colores, CSV adjunto y caso sin datos
+	
+
+Métricas correctas, con errores en p95 o en el caso vacío
+	
+
+Algunas métricas, sin adjunto o sin formato
+	
+
+Sin informe o con datos incorrectos
+	
+
+15 %
+
+Errores globales y seguridad (Parte 5)
+	
+
+Error Workflow configurado en los 4 workflows, sin secretos en los JSON
+	
+
+Error Workflow configurado en parte de ellos
+	
+
+Error Workflow creado pero no enlazado
+	
+
+Secretos expuestos o sin gestión de errores
+	
+
+5 %
+
+Pruebas y documentación
+	
+
+T1 a T12 con evidencias, README completo y preguntas bien respondidas
+	
+
+Pruebas casi completas y README con omisiones menores
+	
+
+Pruebas parciales y README superficial
+	
+
+Sin pruebas o sin README
+	
+
+15 %
+
+Penalizaciones: credenciales en claro dentro de un JSON entregado, −1 punto. Entrega que no se pueda importar en un n8n limpio, −1 punto.
+
+Bonus (hasta +1 punto, sin superar el 10): retos extra de la siguiente sección bien resueltos y documentados.
+11. Retos extra y consejos
+
+Retos extra (opcionales, hasta +1 punto en total)
+
+    Agrupar todos los avisos de un mismo ciclo en un único correo con tabla.
+    Añadir Telegram como segundo canal de aviso, además del correo.
+    Crear GET /incidencias?estado=ABIERTA para consultar las incidencias abiertas desde la API.
+    Crear PATCH /incidencias/{id} para cerrar una incidencia y registrar la hora de cierre.
+    Añadir vuestra propia API (/webhook/incidencias) como séptimo servicio vigilado.
+    Avisar cuando aparezca una nueva release de n8n, comparando https://api.github.com/repos/n8n-io/n8n/releases/latest con la última versión guardada en Static Data.
+
+Consejos
+
+    Probad cada workflow por separado y fijad datos (Pin data) para no repetir llamadas a las APIs en cada prueba.
+    Poned GENERIC_TIMEZONE=Europe/Madrid en el docker-compose.yml; si no, las 08:00 del Schedule se interpretan en otra zona.
+    Usad Sticky Notes para explicar las zonas de cada workflow.
+    Exportad los JSON con frecuencia y guardadlos en Git, con una rama por parte como vimos en la sesión de Git.
+    Los servicios httpbin.org son públicos y a veces tardan más de lo normal. Si un resultado os sorprende, repetid la ejecución antes de cambiar el diseño.
